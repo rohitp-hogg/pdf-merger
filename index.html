@@ -1,0 +1,929 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FUSE the PDF MERGER</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf-lib/1.17.1/pdf-lib.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600&display=swap');
+
+  :root {
+    --neon-cyan: #00f5ff;
+    --neon-green: #00ff88;
+    --neon-red: #ff0055;
+    --bg-void: #020409;
+    --bg-surface: #060c14;
+    --bg-panel: #0a1628;
+    --grid-line: rgba(0, 245, 255, 0.06);
+    --border-glow: rgba(0, 245, 255, 0.3);
+    --text-primary: #e0f4ff;
+    --text-muted: rgba(180, 220, 255, 0.5);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg-void);
+    color: var(--text-primary);
+    font-family: 'Rajdhani', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  /* Animated grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 60px 60px;
+    animation: gridDrift 20s linear infinite;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  @keyframes gridDrift {
+    0% { background-position: 0 0; }
+    100% { background-position: 60px 60px; }
+  }
+
+  /* Scanline overlay */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, 0.08) 2px,
+      rgba(0, 0, 0, 0.08) 4px
+    );
+    pointer-events: none;
+    z-index: 1;
+  }
+
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+    position: relative;
+    z-index: 2;
+  }
+
+  /* Header */
+  header {
+    text-align: center;
+    margin-bottom: 60px;
+  }
+
+  .sys-tag {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 11px;
+    letter-spacing: 6px;
+    color: var(--neon-cyan);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    opacity: 0.7;
+    animation: blink 3s infinite;
+  }
+
+  @keyframes blink {
+    0%, 90%, 100% { opacity: 0.7; }
+    95% { opacity: 0.2; }
+  }
+
+  h1 {
+    font-family: 'Orbitron', monospace;
+    font-size: clamp(32px, 6vw, 64px);
+    font-weight: 900;
+    letter-spacing: 4px;
+    line-height: 1;
+    background: linear-gradient(135deg, #ffffff 0%, var(--neon-cyan) 50%, var(--neon-green) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    filter: drop-shadow(0 0 30px rgba(0, 245, 255, 0.3));
+    margin-bottom: 8px;
+  }
+
+  .subtitle {
+    font-size: 14px;
+    letter-spacing: 3px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  .header-line {
+    width: 200px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+    margin: 24px auto 0;
+    position: relative;
+  }
+
+  .header-line::before, .header-line::after {
+    content: '';
+    position: absolute;
+    width: 6px;
+    height: 6px;
+    border: 1px solid var(--neon-cyan);
+    top: -3px;
+    transform: rotate(45deg);
+  }
+
+  .header-line::before { left: -3px; }
+  .header-line::after { right: -3px; }
+
+  /* Drop Zone */
+  .drop-zone {
+    border: 1px solid var(--border-glow);
+    border-radius: 4px;
+    padding: 60px 40px;
+    text-align: center;
+    cursor: pointer;
+    position: relative;
+    background: var(--bg-surface);
+    transition: all 0.3s ease;
+    overflow: hidden;
+    margin-bottom: 24px;
+  }
+
+  .drop-zone::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(ellipse at center, rgba(0, 245, 255, 0.03) 0%, transparent 70%);
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .drop-zone:hover::before,
+  .drop-zone.dragover::before {
+    opacity: 1;
+  }
+
+  /* Corner decorations */
+  .drop-zone .corner {
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-color: var(--neon-cyan);
+    border-style: solid;
+    opacity: 0.6;
+  }
+  .corner.tl { top: 12px; left: 12px; border-width: 1px 0 0 1px; }
+  .corner.tr { top: 12px; right: 12px; border-width: 1px 1px 0 0; }
+  .corner.bl { bottom: 12px; left: 12px; border-width: 0 0 1px 1px; }
+  .corner.br { bottom: 12px; right: 12px; border-width: 0 1px 1px 0; }
+
+  .drop-zone:hover,
+  .drop-zone.dragover {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 30px rgba(0, 245, 255, 0.1), inset 0 0 30px rgba(0, 245, 255, 0.03);
+    transform: translateY(-1px);
+  }
+
+  .drop-zone.dragover {
+    background: rgba(0, 245, 255, 0.05);
+  }
+
+  .upload-icon {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 20px;
+    position: relative;
+  }
+
+  .upload-icon svg {
+    width: 100%;
+    height: 100%;
+    stroke: var(--neon-cyan);
+    filter: drop-shadow(0 0 8px rgba(0, 245, 255, 0.5));
+  }
+
+  .drop-text-primary {
+    font-family: 'Orbitron', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--neon-cyan);
+    margin-bottom: 8px;
+  }
+
+  .drop-text-secondary {
+    font-size: 13px;
+    color: var(--text-muted);
+    letter-spacing: 1px;
+  }
+
+  #fileInput { display: none; }
+
+  /* File List */
+  .file-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    padding: 0 4px;
+  }
+
+  .file-count-label {
+    font-family: 'Orbitron', monospace;
+    font-size: 11px;
+    color: var(--neon-cyan);
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+
+  .clear-btn {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 12px;
+    letter-spacing: 2px;
+    color: var(--neon-red);
+    background: none;
+    border: 1px solid rgba(255, 0, 85, 0.3);
+    padding: 4px 12px;
+    cursor: pointer;
+    border-radius: 2px;
+    text-transform: uppercase;
+    transition: all 0.2s;
+    display: none;
+  }
+
+  .clear-btn:hover {
+    background: rgba(255, 0, 85, 0.1);
+    border-color: var(--neon-red);
+    box-shadow: 0 0 10px rgba(255, 0, 85, 0.2);
+  }
+
+  .file-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 32px;
+    min-height: 0;
+  }
+
+  .file-item {
+    background: var(--bg-panel);
+    border: 1px solid rgba(0, 245, 255, 0.12);
+    border-radius: 3px;
+    padding: 14px 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    animation: slideIn 0.3s ease forwards;
+    position: relative;
+    overflow: hidden;
+    cursor: grab;
+    user-select: none;
+  }
+
+  .file-item:active { cursor: grabbing; }
+
+  .file-item::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--neon-green);
+    box-shadow: 0 0 8px var(--neon-green);
+  }
+
+  .file-item.dragging {
+    opacity: 0.4;
+    border-color: var(--neon-cyan);
+  }
+
+  .file-item.drag-over {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 16px rgba(0, 245, 255, 0.15);
+    transform: scaleX(1.01);
+  }
+
+  @keyframes slideIn {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+  }
+
+  .drag-handle {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    opacity: 0.4;
+    flex-shrink: 0;
+  }
+
+  .drag-handle span {
+    display: block;
+    width: 16px;
+    height: 1px;
+    background: var(--neon-cyan);
+  }
+
+  .file-index {
+    font-family: 'Orbitron', monospace;
+    font-size: 10px;
+    color: var(--neon-cyan);
+    opacity: 0.5;
+    width: 24px;
+    flex-shrink: 0;
+    text-align: center;
+  }
+
+  .file-icon {
+    width: 32px;
+    height: 36px;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .file-icon svg {
+    width: 100%;
+    height: 100%;
+    stroke: var(--neon-cyan);
+    opacity: 0.7;
+  }
+
+  .file-info {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .file-name {
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 3px;
+  }
+
+  .file-meta {
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 1px;
+  }
+
+  .file-meta span {
+    color: var(--neon-green);
+  }
+
+  .remove-btn {
+    background: none;
+    border: 1px solid rgba(255, 0, 85, 0.2);
+    border-radius: 2px;
+    width: 28px;
+    height: 28px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--neon-red);
+    opacity: 0.5;
+    transition: all 0.2s;
+    flex-shrink: 0;
+    font-size: 16px;
+    line-height: 1;
+  }
+
+  .remove-btn:hover {
+    opacity: 1;
+    background: rgba(255, 0, 85, 0.1);
+    border-color: var(--neon-red);
+    box-shadow: 0 0 8px rgba(255, 0, 85, 0.3);
+  }
+
+  /* Merge Button */
+  .merge-btn {
+    width: 100%;
+    padding: 20px;
+    background: transparent;
+    border: 1px solid var(--neon-cyan);
+    color: var(--neon-cyan);
+    font-family: 'Orbitron', monospace;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    cursor: pointer;
+    border-radius: 3px;
+    position: relative;
+    overflow: hidden;
+    transition: all 0.3s ease;
+  }
+
+  .merge-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--neon-cyan);
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 0.4s ease;
+    z-index: -1;
+  }
+
+  .merge-btn:hover:not(:disabled)::before {
+    transform: scaleX(1);
+  }
+
+  .merge-btn:hover:not(:disabled) {
+    color: var(--bg-void);
+    box-shadow: 0 0 40px rgba(0, 245, 255, 0.4);
+  }
+
+  .merge-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+    border-color: rgba(0, 245, 255, 0.3);
+  }
+
+  .merge-btn.merging {
+    pointer-events: none;
+  }
+
+  /* Progress */
+  .progress-wrap {
+    margin-top: 24px;
+    display: none;
+  }
+
+  .progress-wrap.visible { display: block; }
+
+  .progress-label {
+    font-family: 'Orbitron', monospace;
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--neon-cyan);
+    margin-bottom: 10px;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  .progress-bar-track {
+    height: 3px;
+    background: rgba(0, 245, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--neon-cyan), var(--neon-green));
+    box-shadow: 0 0 10px var(--neon-cyan);
+    border-radius: 2px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+
+  /* Status */
+  .status-msg {
+    margin-top: 20px;
+    padding: 14px 18px;
+    border-radius: 3px;
+    font-family: 'Rajdhani', sans-serif;
+    font-size: 14px;
+    letter-spacing: 1px;
+    display: none;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .status-msg.visible { display: flex; }
+
+  .status-msg.success {
+    background: rgba(0, 255, 136, 0.06);
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    color: var(--neon-green);
+  }
+
+  .status-msg.error {
+    background: rgba(255, 0, 85, 0.06);
+    border: 1px solid rgba(255, 0, 85, 0.3);
+    color: var(--neon-red);
+  }
+
+  .download-btn {
+    margin-left: auto;
+    background: var(--neon-green);
+    color: var(--bg-void);
+    border: none;
+    padding: 8px 18px;
+    font-family: 'Orbitron', monospace;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    cursor: pointer;
+    border-radius: 2px;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .download-btn:hover {
+    box-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+    transform: translateY(-1px);
+  }
+
+  /* Stat bar */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+    margin-bottom: 32px;
+  }
+
+  .stat-card {
+    background: var(--bg-panel);
+    border: 1px solid rgba(0, 245, 255, 0.1);
+    border-radius: 3px;
+    padding: 16px;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .stat-card::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--neon-cyan), transparent);
+    opacity: 0.3;
+  }
+
+  .stat-value {
+    font-family: 'Orbitron', monospace;
+    font-size: 26px;
+    font-weight: 900;
+    color: var(--neon-cyan);
+    filter: drop-shadow(0 0 8px rgba(0, 245, 255, 0.4));
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+
+  .stat-label {
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+  }
+
+  /* Glitch effect on title */
+  h1 {
+    animation: glitch 8s infinite;
+  }
+
+  @keyframes glitch {
+    0%, 92%, 100% { filter: drop-shadow(0 0 30px rgba(0, 245, 255, 0.3)); transform: none; }
+    93% { transform: translateX(-2px); filter: drop-shadow(-2px 0 #ff0055) drop-shadow(2px 0 #00f5ff); }
+    94% { transform: translateX(2px); filter: drop-shadow(2px 0 #ff0055) drop-shadow(-2px 0 #00f5ff); }
+    95% { transform: translateX(0); filter: drop-shadow(0 0 30px rgba(0, 245, 255, 0.3)); }
+  }
+
+  .empty-state {
+    text-align: center;
+    padding: 20px;
+    color: var(--text-muted);
+    font-size: 13px;
+    letter-spacing: 1px;
+    display: none;
+  }
+
+  .pulse-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--neon-green);
+    box-shadow: 0 0 8px var(--neon-green);
+    animation: pulse 1.5s infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.4; transform: scale(0.7); }
+  }
+
+  .spinner {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border: 2px solid rgba(0, 245, 255, 0.2);
+    border-top-color: var(--neon-cyan);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>PDF MERGER</h1>
+    <div class="subtitle">Document Fusion Engine</div>
+    <div class="header-line"></div>
+  </header>
+
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-value" id="statFiles">0</div>
+      <div class="stat-label">Files Loaded</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statPages">0</div>
+      <div class="stat-label">Total Pages</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="statSize">0 KB</div>
+      <div class="stat-label">Combined Size</div>
+    </div>
+  </div>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+
+    <div class="upload-icon">
+      <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"/>
+        <polyline points="16 8 12 4 8 8"/>
+        <line x1="12" y1="4" x2="12" y2="16"/>
+      </svg>
+    </div>
+    <div class="drop-text-primary">DROP PDF FILES HERE</div>
+    <div class="drop-text-secondary">or click to browse — multiple files supported</div>
+    <input type="file" id="fileInput" accept=".pdf" multiple>
+  </div>
+
+  <div class="file-list-header" id="listHeader" style="display:none">
+    <span class="file-count-label">QUEUE — <span id="queueCount">0</span> FILES LOADED</span>
+    <button class="clear-btn" id="clearBtn">✕ CLEAR ALL</button>
+  </div>
+
+  <div class="file-list" id="fileList"></div>
+
+  <button class="merge-btn" id="mergeBtn" disabled>
+    ⬡ INITIATE MERGE SEQUENCE
+  </button>
+
+  <div class="progress-wrap" id="progressWrap">
+    <div class="progress-label">
+      <span id="progressText">MERGING...</span>
+      <span id="progressPct">0%</span>
+    </div>
+    <div class="progress-bar-track">
+      <div class="progress-bar-fill" id="progressBar"></div>
+    </div>
+  </div>
+
+  <div class="status-msg" id="statusMsg"></div>
+</div>
+
+<script>
+  const dropZone = document.getElementById('dropZone');
+  const fileInput = document.getElementById('fileInput');
+  const fileList = document.getElementById('fileList');
+  const mergeBtn = document.getElementById('mergeBtn');
+  const progressWrap = document.getElementById('progressWrap');
+  const progressBar = document.getElementById('progressBar');
+  const progressText = document.getElementById('progressText');
+  const progressPct = document.getElementById('progressPct');
+  const statusMsg = document.getElementById('statusMsg');
+  const listHeader = document.getElementById('listHeader');
+  const clearBtn = document.getElementById('clearBtn');
+  const queueCount = document.getElementById('queueCount');
+
+  let files = [];
+  let pageCountCache = {};
+  let mergedBlob = null;
+  let dragSrcIdx = null;
+
+  // Stats
+  function updateStats() {
+    document.getElementById('statFiles').textContent = files.length;
+    const totalPages = Object.values(pageCountCache).reduce((a, b) => a + b, 0);
+    document.getElementById('statPages').textContent = totalPages;
+    const totalSize = files.reduce((a, f) => a + f.size, 0);
+    document.getElementById('statSize').textContent = formatSize(totalSize);
+    queueCount.textContent = files.length;
+    mergeBtn.disabled = files.length < 2;
+
+    if (files.length > 0) {
+      listHeader.style.display = 'flex';
+      clearBtn.style.display = 'inline-block';
+    } else {
+      listHeader.style.display = 'none';
+      clearBtn.style.display = 'none';
+    }
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+  }
+
+  async function getPageCount(file) {
+    if (pageCountCache[file.name + file.size]) return pageCountCache[file.name + file.size];
+    const buf = await file.arrayBuffer();
+    const pdf = await PDFLib.PDFDocument.load(buf);
+    const count = pdf.getPageCount();
+    pageCountCache[file.name + file.size] = count;
+    return count;
+  }
+
+  function renderFileList() {
+    fileList.innerHTML = '';
+    files.forEach((file, idx) => {
+      const item = document.createElement('div');
+      item.className = 'file-item';
+      item.draggable = true;
+      item.dataset.idx = idx;
+
+      const pages = pageCountCache[file.name + file.size] || '...';
+
+      item.innerHTML = `
+        <div class="drag-handle"><span></span><span></span><span></span></div>
+        <div class="file-index">${String(idx + 1).padStart(2, '0')}</div>
+        <div class="file-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="16" y1="13" x2="8" y2="13"/>
+            <line x1="16" y1="17" x2="8" y2="17"/>
+            <polyline points="10 9 9 9 8 9"/>
+          </svg>
+        </div>
+        <div class="file-info">
+          <div class="file-name">${file.name}</div>
+          <div class="file-meta">${formatSize(file.size)} &nbsp;·&nbsp; <span>${pages} pages</span></div>
+        </div>
+        <button class="remove-btn" data-idx="${idx}" title="Remove">✕</button>
+      `;
+
+      // Drag to reorder
+      item.addEventListener('dragstart', e => {
+        dragSrcIdx = idx;
+        item.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      item.addEventListener('dragend', () => item.classList.remove('dragging'));
+      item.addEventListener('dragover', e => {
+        e.preventDefault();
+        item.classList.add('drag-over');
+      });
+      item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+      item.addEventListener('drop', e => {
+        e.preventDefault();
+        item.classList.remove('drag-over');
+        if (dragSrcIdx !== null && dragSrcIdx !== idx) {
+          const moved = files.splice(dragSrcIdx, 1)[0];
+          files.splice(idx, 0, moved);
+          renderFileList();
+          updateStats();
+        }
+      });
+
+      // Remove
+      item.querySelector('.remove-btn').addEventListener('click', () => {
+        files.splice(idx, 1);
+        renderFileList();
+        updateStats();
+        hideStatus();
+      });
+
+      fileList.appendChild(item);
+    });
+  }
+
+  async function addFiles(newFiles) {
+    hideStatus();
+    for (const f of newFiles) {
+      if (f.type !== 'application/pdf') continue;
+      if (files.find(x => x.name === f.name && x.size === f.size)) continue;
+      files.push(f);
+      renderFileList();
+      updateStats();
+      // Async page count
+      try {
+        await getPageCount(f);
+        renderFileList();
+        updateStats();
+      } catch(e) {}
+    }
+  }
+
+  function hideStatus() {
+    statusMsg.className = 'status-msg';
+    statusMsg.innerHTML = '';
+    mergedBlob = null;
+  }
+
+  function setProgress(pct, text) {
+    progressBar.style.width = pct + '%';
+    progressPct.textContent = pct + '%';
+    progressText.textContent = text;
+  }
+
+  // Drop zone events
+  dropZone.addEventListener('click', () => fileInput.click());
+  dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+  dropZone.addEventListener('drop', e => {
+    e.preventDefault();
+    dropZone.classList.remove('dragover');
+    addFiles(Array.from(e.dataTransfer.files));
+  });
+
+  fileInput.addEventListener('change', () => {
+    addFiles(Array.from(fileInput.files));
+    fileInput.value = '';
+  });
+
+  clearBtn.addEventListener('click', () => {
+    files = [];
+    pageCountCache = {};
+    renderFileList();
+    updateStats();
+    hideStatus();
+    progressWrap.classList.remove('visible');
+  });
+
+  // Merge
+  mergeBtn.addEventListener('click', async () => {
+    if (files.length < 2) return;
+    hideStatus();
+
+    mergeBtn.disabled = true;
+    mergeBtn.classList.add('merging');
+    mergeBtn.textContent = 'MERGING...';
+    progressWrap.classList.add('visible');
+    setProgress(0, 'INITIALIZING MERGE CORE...');
+
+    try {
+      const merged = await PDFLib.PDFDocument.create();
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        setProgress(Math.round((i / files.length) * 85), `PROCESSING FILE ${i + 1}/${files.length}`);
+        const buf = await f.arrayBuffer();
+        const src = await PDFLib.PDFDocument.load(buf);
+        const indices = src.getPageIndices();
+        const pages = await merged.copyPages(src, indices);
+        pages.forEach(p => merged.addPage(p));
+      }
+
+      setProgress(90, 'ENCODING OUTPUT...');
+      const bytes = await merged.save();
+      setProgress(100, 'MERGE COMPLETE');
+      mergedBlob = new Blob([bytes], { type: 'application/pdf' });
+
+      statusMsg.className = 'status-msg success visible';
+      statusMsg.innerHTML = `
+        <div class="pulse-dot"></div>
+        <span>MERGE SUCCESSFUL — ${merged.getPageCount()} pages combined from ${files.length} files (${formatSize(bytes.byteLength)})</span>
+        <button class="download-btn" id="dlBtn">⬇ DOWNLOAD</button>
+      `;
+      document.getElementById('dlBtn').addEventListener('click', () => {
+        const url = URL.createObjectURL(mergedBlob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'merged_document.pdf';
+        a.click();
+        URL.revokeObjectURL(url);
+      });
+
+    } catch(err) {
+      setProgress(0, 'ERROR');
+      statusMsg.className = 'status-msg error visible';
+      statusMsg.innerHTML = `<span>✕ ERROR: ${err.message}</span>`;
+    }
+
+    mergeBtn.disabled = false;
+    mergeBtn.classList.remove('merging');
+    mergeBtn.textContent = '⬡ INITIATE MERGE SEQUENCE';
+    updateStats();
+  });
+</script>
+</body>
+</html>
